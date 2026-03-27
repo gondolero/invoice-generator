@@ -30,13 +30,6 @@ interface InvoiceData {
   rows: Row[]
 }
 
-interface FloatingToolbarPosition {
-  x: number
-  y: number
-  visible: boolean
-  below?: boolean
-}
-
 const DEFAULT_CELL_WIDTH = 120
 
 function generateId() {
@@ -68,11 +61,6 @@ function smartSum(cells: Cell[]): string {
 }
 
 export function InvoiceEditor() {
-  const [floatingToolbar, setFloatingToolbar] = useState<FloatingToolbarPosition>({
-    x: 0,
-    y: 0,
-    visible: false
-  })
   const [data, setData] = useState<InvoiceData>({
     logo: '/logo.jpg',
     rows: [
@@ -84,7 +72,7 @@ export function InvoiceEditor() {
           { id: generateId(), content: 'Description', width: 200 },
           { id: generateId(), content: 'Unit Price', width: 100 },
           { id: generateId(), content: 'Discount', width: 80 },
-          { id: generateId(), content: 'Line Total', width: 100 },
+          { id: generateId(), content: 'Total', width: 100 },
         ]
       },
       {
@@ -102,25 +90,67 @@ export function InvoiceEditor() {
   })
 
   const [isExporting, setIsExporting] = useState(false)
+  const [isSaved, setIsSaved] = useState(false)
+  const [floatingToolbar, setFloatingToolbar] = useState<{ x: number; y: number; visible: boolean; below?: boolean }>({ x: 0, y: 0, visible: false })
   const invoiceRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const editorContainerRef = useRef<HTMLDivElement>(null)
+  const pendingFieldsRef = useRef<string[] | null>(null)
+  const isLoadingRef = useRef(false)
   const maxColumns = Math.max(...data.rows.map(r => r.cells.length))
 
-  // Show floating toolbar on mouseup when text is selected
+  // Restore saved contenteditable fields after render
+  useEffect(() => {
+    if (!pendingFieldsRef.current || !invoiceRef.current) return
+    const els = Array.from(invoiceRef.current.querySelectorAll<HTMLElement>('[contenteditable]'))
+    pendingFieldsRef.current.forEach((html, i) => { if (els[i]) els[i].innerHTML = html })
+    pendingFieldsRef.current = null
+    isLoadingRef.current = false
+  })
+
+  // Load saved draft on mount
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('invoice_draft')
+      if (!saved) return
+      const { tableData, fields } = JSON.parse(saved)
+      isLoadingRef.current = true
+      pendingFieldsRef.current = fields
+      setData(tableData)
+      setIsSaved(true)
+    } catch {}
+  }, [])
+
+  // Reset saved state when table data changes (but not during load)
+  useEffect(() => {
+    if (isLoadingRef.current) return
+    setIsSaved(false)
+  }, [data])
+
+  // Reset saved state when contenteditable fields are edited
+  useEffect(() => {
+    const el = invoiceRef.current
+    if (!el) return
+    const handler = () => { if (!isLoadingRef.current) setIsSaved(false) }
+    el.addEventListener('input', handler)
+    return () => el.removeEventListener('input', handler)
+  }, [])
+
+  const saveDraft = useCallback(() => {
+    if (!invoiceRef.current) return
+    const fields = Array.from(invoiceRef.current.querySelectorAll<HTMLElement>('[contenteditable]'))
+      .map(el => el.innerHTML)
+    localStorage.setItem('invoice_draft', JSON.stringify({ tableData: data, fields }))
+    setIsSaved(true)
+  }, [data])
+
   const checkSelection = useCallback(() => {
     const selection = window.getSelection()
     if (selection && selection.toString().trim().length > 0 && selection.rangeCount > 0) {
       const range = selection.getRangeAt(0)
       const rect = range.getBoundingClientRect()
-      
       const isTouchDevice = window.matchMedia('(hover: none)').matches
-      setFloatingToolbar({
-        x: rect.left + rect.width / 2,
-        y: isTouchDevice ? rect.bottom + 10 : rect.top - 10,
-        visible: true,
-        below: isTouchDevice,
-      })
+      setFloatingToolbar({ x: rect.left + rect.width / 2, y: isTouchDevice ? rect.bottom + 10 : rect.top - 10, visible: true, below: isTouchDevice })
     } else {
       setFloatingToolbar(prev => ({ ...prev, visible: false }))
     }
@@ -129,11 +159,9 @@ export function InvoiceEditor() {
   useEffect(() => {
     const handleMouseUp = () => setTimeout(checkSelection, 0)
     const handleTouchEnd = () => setTimeout(checkSelection, 500)
-
     document.addEventListener('mouseup', handleMouseUp)
     document.addEventListener('touchend', handleTouchEnd)
     document.addEventListener('keyup', checkSelection)
-
     return () => {
       document.removeEventListener('mouseup', handleMouseUp)
       document.removeEventListener('touchend', handleTouchEnd)
@@ -226,11 +254,10 @@ export function InvoiceEditor() {
     }))
   }, [])
 
-  const applyFormat = useCallback((command: string) => {
+  const applyFormat = useCallback((command: string, value?: string) => {
     const selection = window.getSelection()
     if (selection && selection.toString().trim().length > 0) {
-      document.execCommand(command, false)
-      // Keep selection after formatting
+      document.execCommand(command, false, value)
       setFloatingToolbar(prev => ({ ...prev }))
     }
   }, [])
@@ -423,53 +450,23 @@ export function InvoiceEditor() {
 
   return (
     <div className="flex flex-col h-screen bg-background">
-      {/* Floating Toolbar - appears on text selection */}
+      {/* Floating toolbar on text selection */}
       {floatingToolbar.visible && (
-        <div 
+        <div
           data-floating-toolbar
           className="fixed z-50 bg-popover border border-border rounded-lg shadow-lg p-1 flex items-center gap-0.5 animate-in fade-in-0 zoom-in-95"
-          style={{
-            left: `${floatingToolbar.x}px`,
-            top: `${floatingToolbar.y}px`,
-            transform: floatingToolbar.below ? 'translate(-50%, 0)' : 'translate(-50%, -100%)'
-          }}
+          style={{ left: `${floatingToolbar.x}px`, top: `${floatingToolbar.y}px`, transform: floatingToolbar.below ? 'translate(-50%, 0)' : 'translate(-50%, -100%)' }}
           onMouseDown={(e) => e.preventDefault()}
         >
-          <button
-            onMouseDown={(e) => {
-              e.preventDefault()
-              applyFormat('bold')
-            }}
-            className="h-8 w-8 flex items-center justify-center rounded hover:bg-accent text-foreground"
-            title="Bold"
-          >
-            <Bold className="h-4 w-4" />
-          </button>
-          <button
-            onMouseDown={(e) => {
-              e.preventDefault()
-              applyFormat('italic')
-            }}
-            className="h-8 w-8 flex items-center justify-center rounded hover:bg-accent text-foreground"
-            title="Italic"
-          >
-            <Italic className="h-4 w-4" />
-          </button>
-          <button
-            onMouseDown={(e) => {
-              e.preventDefault()
-              applyFormat('underline')
-            }}
-            className="h-8 w-8 flex items-center justify-center rounded hover:bg-accent text-foreground"
-            title="Underline"
-          >
-            <Underline className="h-4 w-4" />
-          </button>
+          <button onMouseDown={(e) => { e.preventDefault(); applyFormat('bold') }} className="h-8 w-8 flex items-center justify-center rounded hover:bg-accent text-foreground" title="Bold"><Bold className="h-4 w-4" /></button>
+          <button onMouseDown={(e) => { e.preventDefault(); applyFormat('italic') }} className="h-8 w-8 flex items-center justify-center rounded hover:bg-accent text-foreground" title="Italic"><Italic className="h-4 w-4" /></button>
+          <button onMouseDown={(e) => { e.preventDefault(); applyFormat('underline') }} className="h-8 w-8 flex items-center justify-center rounded hover:bg-accent text-foreground" title="Underline"><Underline className="h-4 w-4" /></button>
+          <button onMouseDown={(e) => { e.preventDefault(); applyFormat('foreColor', '#ef4444') }} className="h-8 w-8 flex items-center justify-center rounded hover:bg-accent" title="Red text"><span className="h-4 w-4 rounded-sm bg-red-500 inline-block" /></button>
         </div>
       )}
-      
-      {/* Top bar with Export */}
-      <div className="sticky top-0 z-20 bg-card border-b border-border p-2 flex items-center gap-2">
+
+      {/* Top bar */}
+      <div className="sticky top-0 z-20 bg-card border-b border-border p-2 flex items-center gap-1">
         <input
           ref={fileInputRef}
           type="file"
@@ -477,9 +474,47 @@ export function InvoiceEditor() {
           onChange={handleLogoUpload}
           className="hidden"
         />
-        
+
+        <button
+          onMouseDown={(e) => { e.preventDefault(); applyFormat('bold') }}
+          className="h-8 w-8 flex items-center justify-center rounded hover:bg-accent text-foreground"
+          title="Bold"
+        >
+          <Bold className="h-4 w-4" />
+        </button>
+        <button
+          onMouseDown={(e) => { e.preventDefault(); applyFormat('italic') }}
+          className="h-8 w-8 flex items-center justify-center rounded hover:bg-accent text-foreground"
+          title="Italic"
+        >
+          <Italic className="h-4 w-4" />
+        </button>
+        <button
+          onMouseDown={(e) => { e.preventDefault(); applyFormat('underline') }}
+          className="h-8 w-8 flex items-center justify-center rounded hover:bg-accent text-foreground"
+          title="Underline"
+        >
+          <Underline className="h-4 w-4" />
+        </button>
+        <button
+          onMouseDown={(e) => { e.preventDefault(); applyFormat('foreColor', '#ef4444') }}
+          className="h-8 w-8 flex items-center justify-center rounded hover:bg-accent"
+          title="Red text"
+        >
+          <span className="h-4 w-4 rounded-sm bg-red-500 inline-block" />
+        </button>
+
         <div className="flex-1" />
-        
+
+        <Button
+          onClick={saveDraft}
+          variant="secondary"
+          size="sm"
+          className={`h-8 gap-1.5 transition-colors ${isSaved ? 'bg-green-100 text-green-700 hover:bg-green-100' : ''}`}
+        >
+          {isSaved ? 'Saved' : 'Save'}
+        </Button>
+
         <Button
           onClick={exportToPDF}
           disabled={isExporting}
@@ -512,10 +547,11 @@ export function InvoiceEditor() {
                   />
                   <button
                     onClick={removeLogo}
-                    className="absolute -top-2 -right-2 bg-destructive text-destructive-foreground rounded-full p-1"
+                    className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center shadow-sm hover:bg-red-600 transition-colors"
+                    title="Remove logo"
                     data-export-hide
                   >
-                    <X className="h-3 w-3" />
+                    <X className="h-3 w-3 stroke-[3]" />
                   </button>
                 </div>
               ) : (
@@ -532,7 +568,7 @@ export function InvoiceEditor() {
                 suppressContentEditableWarning
                 className="mt-2 text-lg font-bold p-1 border border-transparent hover:border-border rounded focus:border-primary focus:outline-none"
               >
-                CCTV Camera Installation
+                Netera Communications
               </div>
               <div
                 contentEditable
@@ -555,9 +591,9 @@ export function InvoiceEditor() {
           <div className="mb-6 grid grid-cols-2 gap-x-8 gap-y-2 max-w-2xl">
             <EditableField label="To:" defaultValue="Client Name" />
             <EditableField label="Date:" defaultValue={new Date().toLocaleDateString('en-GB', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })} />
-            <EditableField label="Address:" defaultValue="Address" />
-            <EditableField label="Email:" defaultValue="-" />
-            <EditableField label="Tel:" defaultValue="-" />
+            <EditableField label="Address:" defaultValue="Old Golimar, Rexer, near Toll Plaza" />
+            <EditableField label="Email:" defaultValue="aliakbarbalochea@gmail.com" />
+            <EditableField label="Tel:" defaultValue="03223115011" />
             <EditableField label="Invoice #:" defaultValue="-" />
           </div>
           
@@ -681,7 +717,8 @@ export function InvoiceEditor() {
 {`Payment: Cash Only
 Service: Three month free service, will resolve complaints free of cost.
 Warranty: One year equipment warranty. (Power supply and accessories not included)
-Note: Any type of civil & carpenter work will not be in our scope.`}
+Note: Any type of civil & carpenter work will not be in our scope.
+Advance Payment: 25% of labour charges paid upfront for the rolling of workers on site/ work. Remaining as we progress through the job.`}
             </div>
           </div>
           

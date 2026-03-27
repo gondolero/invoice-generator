@@ -1,0 +1,17 @@
+{
+  "name": "Invoice Generator",
+  "short_name": "Invoice",
+  "description": "Create professional invoices with ease",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
+  "icons": [
+    {
+      "src": "/logo.jpg",
+      "sizes": "any",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    }
+  ]
+}
