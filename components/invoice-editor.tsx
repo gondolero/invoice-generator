@@ -34,6 +34,7 @@ interface FloatingToolbarPosition {
   x: number
   y: number
   visible: boolean
+  below?: boolean
 }
 
 const DEFAULT_CELL_WIDTH = 120
@@ -113,10 +114,12 @@ export function InvoiceEditor() {
       const range = selection.getRangeAt(0)
       const rect = range.getBoundingClientRect()
       
+      const isTouchDevice = window.matchMedia('(hover: none)').matches
       setFloatingToolbar({
         x: rect.left + rect.width / 2,
-        y: rect.top - 10,
-        visible: true
+        y: isTouchDevice ? rect.bottom + 10 : rect.top - 10,
+        visible: true,
+        below: isTouchDevice,
       })
     } else {
       setFloatingToolbar(prev => ({ ...prev, visible: false }))
@@ -428,7 +431,7 @@ export function InvoiceEditor() {
           style={{
             left: `${floatingToolbar.x}px`,
             top: `${floatingToolbar.y}px`,
-            transform: 'translate(-50%, -100%)'
+            transform: floatingToolbar.below ? 'translate(-50%, 0)' : 'translate(-50%, -100%)'
           }}
           onMouseDown={(e) => e.preventDefault()}
         >

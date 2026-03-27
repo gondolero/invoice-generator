@@ -3,3 +3,6 @@ node_modules/
 *.local
 .env*
 out/
+*.pdf
+Screenshot*
+.DS_Store
