@@ -90,13 +90,14 @@ export function InvoiceEditor() {
   })
 
   const [isExporting, setIsExporting] = useState(false)
-  const [isSaved, setIsSaved] = useState(false)
+  const [isSaved, setIsSaved] = useState<false | 'manual' | 'auto'>(false)
   const [floatingToolbar, setFloatingToolbar] = useState<{ x: number; y: number; visible: boolean; below?: boolean }>({ x: 0, y: 0, visible: false })
   const invoiceRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const editorContainerRef = useRef<HTMLDivElement>(null)
   const pendingFieldsRef = useRef<string[] | null>(null)
   const isLoadingRef = useRef(false)
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const maxColumns = Math.max(...data.rows.map(r => r.cells.length))
 
   // Restore saved contenteditable fields after render
@@ -114,35 +115,60 @@ export function InvoiceEditor() {
       const saved = localStorage.getItem('invoice_draft')
       if (!saved) return
       const { tableData, fields } = JSON.parse(saved)
+      const savedLogoStr = localStorage.getItem('invoice_logo')
       isLoadingRef.current = true
+      wasLoadingRef.current = true
       pendingFieldsRef.current = fields
-      setData(tableData)
-      setIsSaved(true)
+      setData(prev => ({
+        ...tableData,
+        // savedLogoStr is null if key was never set → keep default logo
+        // savedLogoStr is "null" if logo was explicitly removed → set to null
+        // savedLogoStr is a JSON string → use saved logo
+        logo: savedLogoStr !== null ? JSON.parse(savedLogoStr) : prev.logo
+      }))
     } catch {}
   }, [])
 
-  // Reset saved state when table data changes (but not during load)
-  useEffect(() => {
-    if (isLoadingRef.current) return
-    setIsSaved(false)
+  const saveDraft = useCallback((auto = false) => {
+    if (!invoiceRef.current) return
+    if (autoSaveTimerRef.current) { clearTimeout(autoSaveTimerRef.current); autoSaveTimerRef.current = null }
+    const fields = Array.from(invoiceRef.current.querySelectorAll<HTMLElement>('[contenteditable]'))
+      .map(el => el.innerHTML)
+    const { logo, ...rowsOnly } = data
+    try {
+      localStorage.setItem('invoice_draft', JSON.stringify({ tableData: rowsOnly, fields }))
+      if (!auto) localStorage.setItem('invoice_logo', JSON.stringify(logo))
+    } catch {}
+    setIsSaved(auto ? 'auto' : 'manual')
   }, [data])
 
-  // Reset saved state when contenteditable fields are edited
+  const scheduleAutoSave = useCallback(() => {
+    if (isLoadingRef.current) return
+    setIsSaved(false)
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current)
+    autoSaveTimerRef.current = setTimeout(() => saveDraft(true), 5000)
+  }, [saveDraft])
+
+  const hasMountedRef = useRef(false)
+  const wasLoadingRef = useRef(false)
+  const prevLogoRef = useRef(data.logo)
+
+  // Auto-save on table data changes (skip initial mount, draft load, and logo-only changes)
+  useEffect(() => {
+    if (!hasMountedRef.current) { hasMountedRef.current = true; return }
+    if (wasLoadingRef.current) { wasLoadingRef.current = false; return }
+    // Logo changed — don't auto-save (logo is only saved on manual Save)
+    if (data.logo !== prevLogoRef.current) { prevLogoRef.current = data.logo; return }
+    scheduleAutoSave()
+  }, [data]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-save on contenteditable input
   useEffect(() => {
     const el = invoiceRef.current
     if (!el) return
-    const handler = () => { if (!isLoadingRef.current) setIsSaved(false) }
-    el.addEventListener('input', handler)
-    return () => el.removeEventListener('input', handler)
-  }, [])
-
-  const saveDraft = useCallback(() => {
-    if (!invoiceRef.current) return
-    const fields = Array.from(invoiceRef.current.querySelectorAll<HTMLElement>('[contenteditable]'))
-      .map(el => el.innerHTML)
-    localStorage.setItem('invoice_draft', JSON.stringify({ tableData: data, fields }))
-    setIsSaved(true)
-  }, [data])
+    el.addEventListener('input', scheduleAutoSave)
+    return () => el.removeEventListener('input', scheduleAutoSave)
+  }, [scheduleAutoSave])
 
   const checkSelection = useCallback(() => {
     const selection = window.getSelection()
@@ -182,18 +208,13 @@ export function InvoiceEditor() {
     }))
   }, [maxColumns])
 
-  const addColumnToRow = useCallback((rowId: string) => {
+  const addColumn = useCallback(() => {
     setData(prev => ({
       ...prev,
-      rows: prev.rows.map(row => {
-        if (row.id === rowId) {
-          return {
-            ...row,
-            cells: [...row.cells, { id: generateId(), content: '', width: DEFAULT_CELL_WIDTH }]
-          }
-        }
-        return row
-      })
+      rows: prev.rows.map(row => ({
+        ...row,
+        cells: [...row.cells, { id: generateId(), content: '', width: DEFAULT_CELL_WIDTH }]
+      }))
     }))
   }, [])
 
@@ -507,19 +528,19 @@ export function InvoiceEditor() {
         <div className="flex-1" />
 
         <Button
-          onClick={saveDraft}
-          variant="secondary"
+          onClick={() => saveDraft()}
+          variant="outline"
           size="sm"
-          className={`h-8 gap-1.5 transition-colors ${isSaved ? 'bg-green-100 text-green-700 hover:bg-green-100' : ''}`}
+          className={`h-9 gap-1.5 transition-colors ${isSaved === 'manual' ? 'bg-green-100 text-green-700 hover:bg-green-100 border-green-200' : isSaved === 'auto' ? 'bg-gray-100 text-gray-500 hover:bg-gray-100 border-gray-200' : ''}`}
         >
-          {isSaved ? 'Saved' : 'Save'}
+          {isSaved === 'manual' ? 'Saved' : isSaved === 'auto' ? 'Auto-saved' : 'Save'}
         </Button>
 
         <Button
           onClick={exportToPDF}
           disabled={isExporting}
           size="sm"
-          className="h-8 gap-1.5"
+          className="h-9 gap-1.5"
         >
           <Download className="h-4 w-4" />
           <span>{isExporting ? 'Exporting...' : 'Export PDF'}</span>
@@ -527,13 +548,13 @@ export function InvoiceEditor() {
       </div>
       
       {/* Editor area - scrollable */}
-      <div 
+      <div
         ref={editorContainerRef}
-        className="flex-1 overflow-auto p-4"
+        className="flex-1 overflow-auto p-4 flex justify-center bg-gray-100"
       >
-        <div 
-          ref={invoiceRef} 
-          className="bg-card min-w-max inline-block p-6 rounded-lg shadow-sm border border-border"
+        <div
+          ref={invoiceRef}
+          className="bg-card min-w-max inline-block p-6 rounded-lg border border-border h-fit"
         >
           {/* Company Header */}
           <div className="mb-6 flex justify-between items-start">
@@ -613,7 +634,7 @@ export function InvoiceEditor() {
                       <td key={colIndex} className="border-0 p-0 text-center">
                         <button
                           onClick={() => deleteColumn(colIndex)}
-                          className="mb-1 p-1 text-muted-foreground hover:text-destructive sm:opacity-0 sm:group-hover:opacity-100 transition-opacity"
+                          className="mb-1 p-1 text-muted-foreground hover:text-destructive transition-colors"
                           title="Delete column"
                         >
                           <Trash2 className="h-4 w-4" />
@@ -665,8 +686,8 @@ export function InvoiceEditor() {
                     {/* Add column button */}
                     <td className="border-0 p-0 align-middle" data-export-hide>
                       <button
-                        onClick={() => addColumnToRow(row.id)}
-                        className="ml-1 p-1 text-muted-foreground hover:text-foreground sm:opacity-0 sm:group-hover:opacity-100 transition-opacity"
+                        onClick={addColumn}
+                        className="ml-1 p-1 text-muted-foreground hover:text-foreground transition-colors"
                         title="Add column"
                       >
                         <PlusCircle className="h-4 w-4" />
@@ -677,7 +698,7 @@ export function InvoiceEditor() {
                       {data.rows.length > 1 && (
                         <button
                           onClick={() => deleteRow(row.id)}
-                          className="ml-1 p-1 text-muted-foreground hover:text-destructive sm:opacity-0 sm:group-hover:opacity-100 transition-opacity"
+                          className="ml-1 p-1 text-muted-foreground hover:text-destructive transition-colors"
                           title="Delete row"
                         >
                           <Trash2 className="h-4 w-4" />
