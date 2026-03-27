@@ -521,19 +521,26 @@ export function InvoiceEditor() {
         }
       })
 
+      // Remove overflow constraints so all content is visible for capture
+      clone.querySelectorAll('.overflow-x-auto').forEach(el => {
+        (el as HTMLElement).style.overflow = 'visible'
+      })
+      clone.style.width = 'max-content'
+      clone.style.maxWidth = 'none'
+
       document.body.appendChild(clone)
       convertColorsToRgb(clone)
-      
+
       // Remove add column buttons from clone
       clone.querySelectorAll('[data-export-hide]').forEach(el => el.remove())
-      
+
       const canvas = await html2canvas(clone, {
         scale: 2,
         useCORS: true,
         allowTaint: true,
         backgroundColor: '#ffffff',
-        width: element.scrollWidth,
-        height: element.scrollHeight,
+        width: clone.scrollWidth,
+        height: clone.scrollHeight,
         onclone: (clonedDoc: Document) => {
           // Inject RGB overrides into html2canvas's internal document clone
           // so the @supports(color: lab(...)) block is overridden
@@ -791,7 +798,7 @@ export function InvoiceEditor() {
                         <td
                           key={cell.id}
                           className="border border-border p-0 relative"
-                          style={{ minWidth: cell.width, maxWidth: cell.width }}
+                          style={{ minWidth: cell.width, ...(isHeader ? {} : { maxWidth: cell.width }) }}
                         >
                           {isHeader ? (
                             <div className="flex items-center bg-muted">
