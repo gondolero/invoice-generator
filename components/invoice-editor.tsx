@@ -1,18 +1,35 @@
 "use client"
 
-import { useState, useRef, useCallback, useEffect, memo } from "react"
+import { useState, useRef, useCallback, useEffect, useMemo, memo } from "react"
 import { Button } from "@/components/ui/button"
-import { 
-  Plus, 
-  Trash2, 
-  Download, 
-  Bold, 
-  Italic, 
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu"
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog"
+import {
+  Plus,
+  Trash2,
+  Download,
+  Bold,
+  Italic,
   Underline,
   Image as ImageIcon,
   X,
-  PlusCircle
+  PlusCircle,
+  ChevronDown,
+  Sigma,
 } from "lucide-react"
+import { evaluateFormula, getFormulaReferences } from "@/lib/formula"
 
 interface Cell {
   id: string
@@ -25,9 +42,16 @@ interface Row {
   cells: Cell[]
 }
 
+interface ColumnConfig {
+  id: string
+  formula: string | null
+  showSum: boolean
+}
+
 interface InvoiceData {
   logo: string | null
   rows: Row[]
+  columns: ColumnConfig[]
 }
 
 const DEFAULT_CELL_WIDTH = 120
@@ -60,34 +84,51 @@ function smartSum(cells: Cell[]): string {
   return hasNumbers ? sum.toLocaleString() : ''
 }
 
+function getHeaderName(cell: Cell): string {
+  return cell.content.replace(/<[^>]*>/g, '').trim()
+}
+
+function makeDefaultColumns(headerRow: Row): ColumnConfig[] {
+  return headerRow.cells.map((_, i) => ({
+    id: generateId(),
+    formula: null,
+    showSum: i === headerRow.cells.length - 1, // last column shows sum by default
+  }))
+}
+
 export function InvoiceEditor() {
-  const [data, setData] = useState<InvoiceData>({
-    logo: '/logo.jpg',
-    rows: [
-      {
-        id: generateId(),
-        cells: [
-          { id: generateId(), content: 'Qty', width: 60 },
-          { id: generateId(), content: 'Item #', width: 60 },
-          { id: generateId(), content: 'Description', width: 200 },
-          { id: generateId(), content: 'Unit Price', width: 100 },
-          { id: generateId(), content: 'Discount', width: 80 },
-          { id: generateId(), content: 'Total', width: 100 },
-        ]
-      },
-      {
-        id: generateId(),
-        cells: [
-          { id: generateId(), content: '1.00', width: 60 },
-          { id: generateId(), content: '1', width: 60 },
-          { id: generateId(), content: 'Sample Item', width: 200 },
-          { id: generateId(), content: '1,000', width: 100 },
-          { id: generateId(), content: '0', width: 80 },
-          { id: generateId(), content: '1,000', width: 100 },
-        ]
-      }
-    ]
+  const [data, setData] = useState<InvoiceData>(() => {
+    const headerRow: Row = {
+      id: generateId(),
+      cells: [
+        { id: generateId(), content: 'Qty', width: 60 },
+        { id: generateId(), content: 'Item #', width: 60 },
+        { id: generateId(), content: 'Description', width: 200 },
+        { id: generateId(), content: 'Unit Price', width: 100 },
+        { id: generateId(), content: 'Discount', width: 80 },
+        { id: generateId(), content: 'Total', width: 100 },
+      ]
+    }
+    return {
+      logo: '/logo.jpg',
+      rows: [
+        headerRow,
+        {
+          id: generateId(),
+          cells: [
+            { id: generateId(), content: '1.00', width: 60 },
+            { id: generateId(), content: '1', width: 60 },
+            { id: generateId(), content: 'Sample Item', width: 200 },
+            { id: generateId(), content: '1,000', width: 100 },
+            { id: generateId(), content: '0', width: 80 },
+            { id: generateId(), content: '1,000', width: 100 },
+          ]
+        }
+      ],
+      columns: makeDefaultColumns(headerRow),
+    }
   })
+  const [formulaDialog, setFormulaDialog] = useState<{ colIndex: number; draft: string } | null>(null)
 
   const [isExporting, setIsExporting] = useState(false)
   const [isSaved, setIsSaved] = useState<false | 'manual' | 'auto'>(false)
@@ -99,6 +140,49 @@ export function InvoiceEditor() {
   const isLoadingRef = useRef(false)
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const maxColumns = Math.max(...data.rows.map(r => r.cells.length))
+
+  // Compute header names for formula evaluation
+  const headerNames = useMemo(() => {
+    const hdr = data.rows[0]
+    return hdr ? hdr.cells.map(c => getHeaderName(c)) : []
+  }, [data.rows])
+
+  // Compute all formula cell values
+  const calculatedValues = useMemo(() => {
+    const hdr = data.rows[0]
+    if (!hdr) return new Map<string, Map<number, string>>()
+
+    // Find which columns have formulas and their dependency order
+    const formulaCols = data.columns
+      .map((col, i) => ({ ...col, index: i }))
+      .filter(c => c.formula)
+
+    const result = new Map<string, Map<number, string>>()
+    for (const row of data.rows.slice(1)) {
+      const vars: Record<string, number> = {}
+      // First pass: populate variables from non-formula columns
+      hdr.cells.forEach((hdrCell, i) => {
+        const name = getHeaderName(hdrCell)
+        if (!data.columns[i]?.formula && row.cells[i]) {
+          vars[name] = parseNumericValue(row.cells[i].content) ?? 0
+        }
+      })
+      // Second pass: evaluate formula columns (handles one level of dependency)
+      const rowMap = new Map<number, string>()
+      for (const fc of formulaCols) {
+        const val = evaluateFormula(fc.formula!, vars, headerNames)
+        const name = getHeaderName(hdr.cells[fc.index])
+        if (val !== null) {
+          vars[name] = val
+          rowMap.set(fc.index, val.toLocaleString())
+        } else {
+          rowMap.set(fc.index, '')
+        }
+      }
+      result.set(row.id, rowMap)
+    }
+    return result
+  }, [data.rows, data.columns, headerNames])
 
   // Restore saved contenteditable fields after render
   useEffect(() => {
@@ -119,13 +203,17 @@ export function InvoiceEditor() {
       isLoadingRef.current = true
       wasLoadingRef.current = true
       pendingFieldsRef.current = fields
-      setData(prev => ({
-        ...tableData,
-        // savedLogoStr is null if key was never set → keep default logo
-        // savedLogoStr is "null" if logo was explicitly removed → set to null
-        // savedLogoStr is a JSON string → use saved logo
-        logo: savedLogoStr !== null ? JSON.parse(savedLogoStr) : prev.logo
-      }))
+      setData(prev => {
+        const merged = {
+          ...tableData,
+          logo: savedLogoStr !== null ? JSON.parse(savedLogoStr) : prev.logo,
+        }
+        // Migration: generate columns if saved data lacks them
+        if (!merged.columns && merged.rows?.[0]) {
+          merged.columns = makeDefaultColumns(merged.rows[0])
+        }
+        return merged
+      })
     } catch {}
   }, [])
 
@@ -214,7 +302,8 @@ export function InvoiceEditor() {
       rows: prev.rows.map(row => ({
         ...row,
         cells: [...row.cells, { id: generateId(), content: '', width: DEFAULT_CELL_WIDTH }]
-      }))
+      })),
+      columns: [...prev.columns, { id: generateId(), formula: null, showSum: false }],
     }))
   }, [])
 
@@ -226,33 +315,59 @@ export function InvoiceEditor() {
   }, [])
 
   const deleteColumn = useCallback((colIndex: number) => {
-    setData(prev => ({
-      ...prev,
-      rows: prev.rows.map(row => ({
-        ...row,
-        cells: row.cells.filter((_, idx) => idx !== colIndex)
-      }))
-    }))
+    setData(prev => {
+      const deletedName = getHeaderName(prev.rows[0]?.cells[colIndex])
+      return {
+        ...prev,
+        rows: prev.rows.map(row => ({
+          ...row,
+          cells: row.cells.filter((_, idx) => idx !== colIndex)
+        })),
+        columns: prev.columns.filter((_, idx) => idx !== colIndex).map(col => {
+          // Remove references to the deleted column from formulas
+          if (!col.formula || !deletedName) return col
+          const refs = getFormulaReferences(col.formula, [deletedName])
+          if (refs.length === 0) return col
+          // Clear formula if it references the deleted column
+          return { ...col, formula: null }
+        }),
+      }
+    })
   }, [])
 
   const updateCellContent = useCallback((rowId: string, cellId: string, content: string) => {
-    setData(prev => ({
-      ...prev,
-      rows: prev.rows.map(row => {
-        if (row.id === rowId) {
-          return {
-            ...row,
-            cells: row.cells.map(cell => {
-              if (cell.id === cellId) {
-                return { ...cell, content }
-              }
-              return cell
+    setData(prev => {
+      const isHeaderRow = prev.rows[0]?.id === rowId
+      let newColumns = prev.columns
+
+      // If editing a header cell, propagate rename to formulas
+      if (isHeaderRow) {
+        const cellIndex = prev.rows[0].cells.findIndex(c => c.id === cellId)
+        if (cellIndex >= 0) {
+          const oldName = getHeaderName(prev.rows[0].cells[cellIndex])
+          const newName = content.replace(/<[^>]*>/g, '').trim()
+          if (oldName && newName && oldName !== newName) {
+            newColumns = prev.columns.map(col => {
+              if (!col.formula) return col
+              // Replace old name with new name in formula (case-insensitive)
+              const regex = new RegExp(oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi')
+              return { ...col, formula: col.formula.replace(regex, newName) }
             })
           }
         }
-        return row
-      })
-    }))
+      }
+
+      return {
+        ...prev,
+        columns: newColumns,
+        rows: prev.rows.map(row => {
+          if (row.id === rowId) {
+            return { ...row, cells: row.cells.map(cell => cell.id === cellId ? { ...cell, content } : cell) }
+          }
+          return row
+        })
+      }
+    })
   }, [])
 
   const updateCellWidth = useCallback((rowId: string, cellId: string, width: number) => {
@@ -260,18 +375,24 @@ export function InvoiceEditor() {
       ...prev,
       rows: prev.rows.map(row => {
         if (row.id === rowId) {
-          return {
-            ...row,
-            cells: row.cells.map(cell => {
-              if (cell.id === cellId) {
-                return { ...cell, width: Math.max(40, width) }
-              }
-              return cell
-            })
-          }
+          return { ...row, cells: row.cells.map(cell => cell.id === cellId ? { ...cell, width: Math.max(40, width) } : cell) }
         }
         return row
       })
+    }))
+  }, [])
+
+  const setColumnFormula = useCallback((colIndex: number, formula: string | null) => {
+    setData(prev => ({
+      ...prev,
+      columns: prev.columns.map((col, i) => i === colIndex ? { ...col, formula } : col),
+    }))
+  }, [])
+
+  const toggleColumnSum = useCallback((colIndex: number) => {
+    setData(prev => ({
+      ...prev,
+      columns: prev.columns.map((col, i) => i === colIndex ? { ...col, showSum: !col.showSum } : col),
     }))
   }, [])
 
@@ -463,11 +584,24 @@ export function InvoiceEditor() {
     }
   }, [])
 
-  // Calculate sum for a column
+  // Calculate sum for a column (uses computed values for formula columns)
   const getColumnSum = useCallback((colIndex: number): string => {
+    const isFormula = data.columns[colIndex]?.formula
+    if (isFormula) {
+      let sum = 0
+      let hasNumbers = false
+      for (const row of data.rows.slice(1)) {
+        const val = calculatedValues.get(row.id)?.get(colIndex)
+        if (val) {
+          const num = parseFloat(val.replace(/,/g, ''))
+          if (!isNaN(num)) { sum += num; hasNumbers = true }
+        }
+      }
+      return hasNumbers ? sum.toLocaleString() : ''
+    }
     const cells = data.rows.slice(1).map(row => row.cells[colIndex]).filter(Boolean)
     return smartSum(cells)
-  }, [data.rows])
+  }, [data.rows, data.columns, calculatedValues])
 
   return (
     <div className="flex flex-col h-screen bg-background">
@@ -486,75 +620,78 @@ export function InvoiceEditor() {
         </div>
       )}
 
-      {/* Top bar */}
-      <div className="sticky top-0 z-20 bg-card border-b border-border p-2 flex items-center gap-1">
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="image/*"
-          onChange={handleLogoUpload}
-          className="hidden"
-        />
+      {/* Scrollable area — toolbar + editor share same scroll context */}
+      <div className="flex-1 overflow-y-auto bg-gray-100">
+        {/* Top bar */}
+        <div className="sticky top-0 z-20 bg-card border-b border-border">
+          <div className="max-w-[1080px] mx-auto py-2 flex items-center gap-1">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              onChange={handleLogoUpload}
+              className="hidden"
+            />
 
-        <button
-          onMouseDown={(e) => { e.preventDefault(); applyFormat('bold') }}
-          className="h-8 w-8 flex items-center justify-center rounded hover:bg-accent text-foreground"
-          title="Bold"
-        >
-          <Bold className="h-4 w-4" />
-        </button>
-        <button
-          onMouseDown={(e) => { e.preventDefault(); applyFormat('italic') }}
-          className="h-8 w-8 flex items-center justify-center rounded hover:bg-accent text-foreground"
-          title="Italic"
-        >
-          <Italic className="h-4 w-4" />
-        </button>
-        <button
-          onMouseDown={(e) => { e.preventDefault(); applyFormat('underline') }}
-          className="h-8 w-8 flex items-center justify-center rounded hover:bg-accent text-foreground"
-          title="Underline"
-        >
-          <Underline className="h-4 w-4" />
-        </button>
-        <button
-          onMouseDown={(e) => { e.preventDefault(); applyFormat('foreColor', '#ef4444') }}
-          className="h-8 w-8 flex items-center justify-center rounded hover:bg-accent"
-          title="Red text"
-        >
-          <span className="h-4 w-4 rounded-sm bg-red-500 inline-block" />
-        </button>
+            <button
+              onMouseDown={(e) => { e.preventDefault(); applyFormat('bold') }}
+              className="h-8 w-8 flex items-center justify-center rounded hover:bg-accent text-foreground"
+              title="Bold"
+            >
+              <Bold className="h-4 w-4" />
+            </button>
+            <button
+              onMouseDown={(e) => { e.preventDefault(); applyFormat('italic') }}
+              className="h-8 w-8 flex items-center justify-center rounded hover:bg-accent text-foreground"
+              title="Italic"
+            >
+              <Italic className="h-4 w-4" />
+            </button>
+            <button
+              onMouseDown={(e) => { e.preventDefault(); applyFormat('underline') }}
+              className="h-8 w-8 flex items-center justify-center rounded hover:bg-accent text-foreground"
+              title="Underline"
+            >
+              <Underline className="h-4 w-4" />
+            </button>
+            <button
+              onMouseDown={(e) => { e.preventDefault(); applyFormat('foreColor', '#ef4444') }}
+              className="h-8 w-8 flex items-center justify-center rounded hover:bg-accent"
+              title="Red text"
+            >
+              <span className="h-4 w-4 rounded-sm bg-red-500 inline-block" />
+            </button>
 
-        <div className="flex-1" />
+            <div className="flex-1" />
 
-        <Button
-          onClick={() => saveDraft()}
-          variant="outline"
-          size="sm"
-          className={`h-9 gap-1.5 transition-colors ${isSaved === 'manual' ? 'bg-green-100 text-green-700 hover:bg-green-100 border-green-200' : isSaved === 'auto' ? 'bg-gray-100 text-gray-500 hover:bg-gray-100 border-gray-200' : ''}`}
-        >
-          {isSaved === 'manual' ? 'Saved' : isSaved === 'auto' ? 'Auto-saved' : 'Save'}
-        </Button>
+            <Button
+              onClick={() => saveDraft()}
+              variant="outline"
+              size="sm"
+              className={`h-9 gap-1.5 transition-colors ${isSaved === 'manual' ? 'bg-green-100 text-green-700 hover:bg-green-100 border-green-200' : isSaved === 'auto' ? 'bg-gray-100 text-gray-500 hover:bg-gray-100 border-gray-200' : ''}`}
+            >
+              {isSaved === 'manual' ? 'Saved' : isSaved === 'auto' ? 'Auto-saved' : 'Save'}
+            </Button>
 
-        <Button
-          onClick={exportToPDF}
-          disabled={isExporting}
-          size="sm"
-          className="h-9 gap-1.5"
+            <Button
+              onClick={exportToPDF}
+              disabled={isExporting}
+              size="sm"
+              className="h-9 gap-1.5"
+            >
+              <Download className="h-4 w-4" />
+              <span>{isExporting ? 'Exporting...' : 'Export PDF'}</span>
+            </Button>
+          </div>
+        </div>
+        <div
+          ref={editorContainerRef}
+          className="w-full max-w-[1080px] mx-auto py-4"
         >
-          <Download className="h-4 w-4" />
-          <span>{isExporting ? 'Exporting...' : 'Export PDF'}</span>
-        </Button>
-      </div>
-      
-      {/* Editor area - scrollable */}
-      <div
-        ref={editorContainerRef}
-        className="flex-1 overflow-auto p-4 flex justify-center bg-gray-100"
-      >
+
         <div
           ref={invoiceRef}
-          className="bg-card min-w-max inline-block p-6 rounded-lg border border-border h-fit"
+          className="bg-card p-6 rounded-lg border border-border"
         >
           {/* Company Header */}
           <div className="mb-6 flex justify-between items-start">
@@ -624,14 +761,14 @@ export function InvoiceEditor() {
           </div>
           
           {/* Table */}
-          <div className="relative">
-            <table className="border-collapse">
+          <div className="relative overflow-x-auto">
+            <table className="border-collapse min-w-max">
               <tbody>
                 {/* Delete column controls row */}
                 {maxColumns > 1 && (
                   <tr className="group" data-export-hide>
                     {Array.from({ length: maxColumns }, (_, colIndex) => (
-                      <td key={colIndex} className="border-0 p-0 text-center">
+                      <td key={colIndex} className="border-0 p-0 text-left">
                         <button
                           onClick={() => deleteColumn(colIndex)}
                           className="mb-1 p-1 text-muted-foreground hover:text-destructive transition-colors"
@@ -647,42 +784,84 @@ export function InvoiceEditor() {
                 )}
                 {data.rows.map((row, rowIndex) => (
                   <tr key={row.id} className="group">
-                    {row.cells.map((cell, cellIndex) => (
-                      <td
-                        key={cell.id}
-                        className="border border-border p-0 relative"
-                        style={{ minWidth: cell.width, maxWidth: cell.width }}
-                      >
-<EditableCell
-                          key={`${row.id}-${cell.id}`}
-                          content={cell.content}
-                          isHeader={rowIndex === 0}
-                          onBlur={(html) => updateCellContent(row.id, cell.id, html)}
-                        />
-                        {/* Column resize handle */}
-                        <div
-                          className="absolute top-0 right-0 w-1 h-full cursor-col-resize hover:bg-primary/50 opacity-0 group-hover:opacity-100 transition-opacity"
-                          onMouseDown={(e) => {
-                            e.preventDefault()
-                            const startX = e.clientX
-                            const startWidth = cell.width
-                            
-                            const handleMouseMove = (moveE: MouseEvent) => {
-                              const diff = moveE.clientX - startX
-                              updateCellWidth(row.id, cell.id, startWidth + diff)
-                            }
-                            
-                            const handleMouseUp = () => {
-                              document.removeEventListener('mousemove', handleMouseMove)
-                              document.removeEventListener('mouseup', handleMouseUp)
-                            }
-                            
-                            document.addEventListener('mousemove', handleMouseMove)
-                            document.addEventListener('mouseup', handleMouseUp)
-                          }}
-                        />
-                      </td>
-                    ))}
+                    {row.cells.map((cell, cellIndex) => {
+                      const isHeader = rowIndex === 0
+                      const isFormula = !isHeader && data.columns[cellIndex]?.formula
+                      return (
+                        <td
+                          key={cell.id}
+                          className="border border-border p-0 relative"
+                          style={{ minWidth: cell.width, maxWidth: cell.width }}
+                        >
+                          {isHeader ? (
+                            <div className="flex items-center bg-muted">
+                              <EditableCell
+                                key={`${row.id}-${cell.id}`}
+                                content={cell.content}
+                                isHeader
+                                onBlur={(html) => updateCellContent(row.id, cell.id, html)}
+                              />
+                              {data.columns[cellIndex]?.showSum && (
+                                <Sigma className="h-3 w-3 shrink-0 text-muted-foreground" data-export-hide />
+                              )}
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <button
+                                    className="shrink-0 p-1 text-muted-foreground hover:text-foreground transition-colors"
+                                    data-export-hide
+                                  >
+                                    <ChevronDown className="h-3 w-3" />
+                                  </button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end" className="shadow-none">
+                                  <DropdownMenuItem onSelect={() => setFormulaDialog({ colIndex: cellIndex, draft: data.columns[cellIndex]?.formula ?? '' })}>
+                                    Set formula...
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem onSelect={() => toggleColumnSum(cellIndex)}>
+                                    {data.columns[cellIndex]?.showSum ? 'Remove column sum' : 'Show column sum'}
+                                  </DropdownMenuItem>
+                                  {data.columns[cellIndex]?.formula && (
+                                    <>
+                                      <DropdownMenuSeparator />
+                                      <DropdownMenuItem className="text-destructive" onSelect={() => setColumnFormula(cellIndex, null)}>
+                                        Clear formula
+                                      </DropdownMenuItem>
+                                    </>
+                                  )}
+                                </DropdownMenuContent>
+                              </DropdownMenu>
+                            </div>
+                          ) : isFormula ? (
+                            <ComputedCell value={calculatedValues.get(row.id)?.get(cellIndex) ?? ''} />
+                          ) : (
+                            <EditableCell
+                              key={`${row.id}-${cell.id}`}
+                              content={cell.content}
+                              isHeader={false}
+                              onBlur={(html) => updateCellContent(row.id, cell.id, html)}
+                            />
+                          )}
+                          {/* Column resize handle */}
+                          <div
+                            className="absolute top-0 right-0 w-1 h-full cursor-col-resize hover:bg-primary/50 opacity-0 group-hover:opacity-100 transition-opacity"
+                            onMouseDown={(e) => {
+                              e.preventDefault()
+                              const startX = e.clientX
+                              const startWidth = cell.width
+                              const handleMouseMove = (moveE: MouseEvent) => {
+                                updateCellWidth(row.id, cell.id, startWidth + (moveE.clientX - startX))
+                              }
+                              const handleMouseUp = () => {
+                                document.removeEventListener('mousemove', handleMouseMove)
+                                document.removeEventListener('mouseup', handleMouseUp)
+                              }
+                              document.addEventListener('mousemove', handleMouseMove)
+                              document.addEventListener('mouseup', handleMouseUp)
+                            }}
+                          />
+                        </td>
+                      )
+                    })}
                     {/* Add column button */}
                     <td className="border-0 p-0 align-middle" data-export-hide>
                       <button
@@ -707,9 +886,21 @@ export function InvoiceEditor() {
                     </td>
                   </tr>
                 ))}
+                {/* Sum row */}
+                {data.columns.some(c => c.showSum) && (
+                  <tr className="border-t-2 border-foreground">
+                    {data.rows[0]?.cells.map((cell, colIndex) => (
+                      <td key={cell.id} className="border border-border p-2 font-bold text-sm text-right">
+                        {data.columns[colIndex]?.showSum ? getColumnSum(colIndex) : ''}
+                      </td>
+                    ))}
+                    <td className="border-0 p-0" />
+                    <td className="border-0 p-0" />
+                  </tr>
+                )}
               </tbody>
             </table>
-            
+
             {/* Add row button - bottom left */}
             <div className="mt-2" data-export-hide>
               <Button
@@ -724,8 +915,11 @@ export function InvoiceEditor() {
             </div>
           </div>
           
-          {/* Totals section */}
-          <TotalsSection subtotal={getColumnSum(data.rows[0]?.cells.length - 1 || 0)} />
+          {/* Totals section — uses the rightmost column with showSum enabled */}
+          <TotalsSection subtotal={(() => {
+            const sumColIndex = data.columns.reduce((last, col, i) => col.showSum ? i : last, -1)
+            return sumColIndex >= 0 ? getColumnSum(sumColIndex) : '0'
+          })()} />
           
           {/* Terms & Conditions */}
           <div className="mt-6 pt-4 border-t border-border">
@@ -767,10 +961,120 @@ Advance Payment: 25% of labour charges paid upfront for the rolling of workers o
             </div>
           </div>
         </div>
+        </div>
       </div>
+
+      {/* Footer */}
+      <div className="border-t border-border bg-card">
+        <div className="max-w-[1080px] mx-auto py-3 px-4 text-center text-xs text-muted-foreground">
+          All rights reserved. A product of{' '}
+          <a href="https://browse.fyi" target="_blank" rel="noopener noreferrer" className="underline hover:text-foreground transition-colors">
+            browse.fyi
+          </a>
+        </div>
+      </div>
+
+      {/* Formula editor dialog */}
+      <Dialog open={formulaDialog !== null} onOpenChange={(open) => { if (!open) setFormulaDialog(null) }}>
+        <DialogContent className="sm:max-w-sm shadow-none">
+          <DialogHeader>
+            <DialogTitle>
+              Formula for &ldquo;{formulaDialog !== null ? headerNames[formulaDialog.colIndex] || 'Column' : ''}&rdquo;
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            {/* Formula preview */}
+            <div className="min-h-[40px] border border-input rounded-md px-3 py-2 text-sm font-mono bg-muted/30">
+              {formulaDialog?.draft || <span className="text-muted-foreground">Tap columns &amp; operators below</span>}
+            </div>
+
+            {/* Column chips */}
+            <div>
+              <label className="text-xs text-muted-foreground mb-1 block">Columns</label>
+              <div className="flex flex-wrap gap-1.5">
+                {headerNames.map((name, i) => {
+                  if (!name || (formulaDialog && i === formulaDialog.colIndex)) return null
+                  return (
+                    <button
+                      key={i}
+                      className="px-2.5 py-1.5 text-xs font-medium bg-primary/10 text-primary rounded-md hover:bg-primary/20 transition-colors"
+                      onClick={() => setFormulaDialog(prev => prev ? { ...prev, draft: (prev.draft ? prev.draft + ' ' : '') + name } : null)}
+                    >
+                      {name}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+
+            {/* Operator buttons */}
+            <div>
+              <label className="text-xs text-muted-foreground mb-1 block">Operators</label>
+              <div className="flex gap-1.5">
+                {[{ label: '+', value: ' + ' }, { label: '−', value: ' - ' }, { label: '×', value: ' * ' }, { label: '÷', value: ' / ' }, { label: '( )', value: '' }].map(op => (
+                  <button
+                    key={op.label}
+                    className="h-9 w-9 flex items-center justify-center text-sm font-bold border border-border rounded-md hover:bg-accent transition-colors"
+                    onClick={() => {
+                      if (op.label === '( )') {
+                        setFormulaDialog(prev => prev ? { ...prev, draft: prev.draft + ' (' } : null)
+                      } else {
+                        setFormulaDialog(prev => prev ? { ...prev, draft: prev.draft + op.value } : null)
+                      }
+                    }}
+                  >
+                    {op.label}
+                  </button>
+                ))}
+                <button
+                  className="h-9 px-2 flex items-center justify-center text-xs border border-border rounded-md hover:bg-accent transition-colors"
+                  onClick={() => setFormulaDialog(prev => prev ? { ...prev, draft: prev.draft + ' )' } : null)}
+                >
+                  )
+                </button>
+                <button
+                  className="h-9 px-3 flex items-center justify-center text-xs text-destructive border border-border rounded-md hover:bg-destructive/10 transition-colors ml-auto"
+                  onClick={() => setFormulaDialog(prev => prev ? { ...prev, draft: '' } : null)}
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+
+            {/* Validation */}
+            {formulaDialog?.draft ? (() => {
+              const otherNames = headerNames.filter((_, i) => i !== formulaDialog.colIndex)
+              const result = evaluateFormula(formulaDialog.draft, Object.fromEntries(otherNames.map(n => [n, 1])), otherNames)
+              return (
+                <div className={`text-xs ${result !== null ? 'text-green-600' : 'text-destructive'}`}>
+                  {result !== null ? 'Valid formula' : 'Check your formula'}
+                </div>
+              )
+            })() : null}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => setFormulaDialog(null)}>Cancel</Button>
+            <Button size="sm" onClick={() => {
+              if (formulaDialog) {
+                setColumnFormula(formulaDialog.colIndex, formulaDialog.draft.trim() || null)
+                setFormulaDialog(null)
+              }
+            }}>Apply</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
+
+// Computed (formula) cell — read-only
+const ComputedCell = memo(function ComputedCell({ value }: { value: string }) {
+  return (
+    <div className="p-2 min-h-[40px] text-sm text-right tabular-nums bg-muted/60">
+      {value}
+    </div>
+  )
+})
 
 // Memoized component to prevent re-renders from interrupting text selection
 const EditableCell = memo(function EditableCell({ 
@@ -799,7 +1103,7 @@ const EditableCell = memo(function EditableCell({
       suppressContentEditableWarning
       className={`
         p-2 min-h-[40px] outline-none whitespace-pre-wrap break-words
-        ${isHeader ? 'bg-muted font-semibold text-sm' : 'text-sm'}
+        ${isHeader ? 'font-semibold text-sm flex-1 whitespace-nowrap overflow-hidden' : 'text-sm'}
         focus:bg-accent/50
       `}
       onBlur={(e) => onBlur(e.currentTarget.innerHTML)}
