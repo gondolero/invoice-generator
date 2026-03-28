@@ -627,10 +627,8 @@ export function InvoiceEditor() {
         </div>
       )}
 
-      {/* Scrollable area — toolbar + editor share same scroll context */}
-      <div className="flex-1 overflow-y-auto bg-gray-100">
-        {/* Top bar */}
-        <div className="sticky top-0 z-20 bg-card border-b border-border">
+      {/* Top bar — fixed so it stays visible when mobile keyboard opens */}
+      <div className="sticky top-0 z-20 bg-card border-b border-border">
           <div className="max-w-[1080px] mx-auto py-2 flex items-center gap-1">
             <input
               ref={fileInputRef}
@@ -691,6 +689,9 @@ export function InvoiceEditor() {
             </Button>
           </div>
         </div>
+
+      {/* Editor area - scrollable */}
+      <div className="flex-1 overflow-y-auto bg-gray-100">
         <div
           ref={editorContainerRef}
           className="w-full max-w-[1080px] mx-auto py-4"
