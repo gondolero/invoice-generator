@@ -611,7 +611,7 @@ export function InvoiceEditor() {
   }, [data.rows, data.columns, calculatedValues])
 
   return (
-    <div className="flex flex-col h-screen bg-background">
+    <div className="flex flex-col h-[100dvh] bg-background">
       {/* Floating toolbar on text selection */}
       {floatingToolbar.visible && (
         <div
@@ -1018,27 +1018,15 @@ Advance Payment: 25% of labour charges paid upfront for the rolling of workers o
             <div>
               <label className="text-xs text-muted-foreground mb-1 block">Operators</label>
               <div className="flex gap-1.5">
-                {[{ label: '+', value: ' + ' }, { label: '−', value: ' - ' }, { label: '×', value: ' * ' }, { label: '÷', value: ' / ' }, { label: '( )', value: '' }].map(op => (
+                {[{ label: '+', value: ' + ' }, { label: '−', value: ' - ' }, { label: '×', value: ' * ' }, { label: '÷', value: ' / ' }].map(op => (
                   <button
                     key={op.label}
                     className="h-9 w-9 flex items-center justify-center text-sm font-bold border border-border rounded-md hover:bg-accent transition-colors"
-                    onClick={() => {
-                      if (op.label === '( )') {
-                        setFormulaDialog(prev => prev ? { ...prev, draft: prev.draft + ' (' } : null)
-                      } else {
-                        setFormulaDialog(prev => prev ? { ...prev, draft: prev.draft + op.value } : null)
-                      }
-                    }}
+                    onClick={() => setFormulaDialog(prev => prev ? { ...prev, draft: prev.draft + op.value } : null)}
                   >
                     {op.label}
                   </button>
                 ))}
-                <button
-                  className="h-9 px-2 flex items-center justify-center text-xs border border-border rounded-md hover:bg-accent transition-colors"
-                  onClick={() => setFormulaDialog(prev => prev ? { ...prev, draft: prev.draft + ' )' } : null)}
-                >
-                  )
-                </button>
                 <button
                   className="h-9 px-3 flex items-center justify-center text-xs text-destructive border border-border rounded-md hover:bg-destructive/10 transition-colors ml-auto"
                   onClick={() => setFormulaDialog(prev => prev ? { ...prev, draft: '' } : null)}
